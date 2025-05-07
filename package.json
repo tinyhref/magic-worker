@@ -1,0 +1,40 @@
+{
+  "name": "@microui-kit/magic-worker",
+  "version": "0.0.3",
+  "description": "",
+  "keywords": [],
+  "author": "",
+  "homepage": "https://microui.org",
+  "license": "MIT",
+  "main": "src/index.ts",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/microui-org/magic-worker.git"
+  },
+  "scripts": {
+    "build": "tsup src --dts",
+    "dev": "pnpm build:fast --watch",
+    "clean": "rimraf dist .turbo",
+    "typecheck": "tsc --noEmit",
+    "build:fast": "tsup src",
+    "prepack": "clean-package",
+    "postpack": "clean-package restore"
+  },
+  "dependencies": {},
+  "peerDependencies": {},
+  "devDependencies": {
+    "@types/node": "^15.12.4",
+    "clean-package": "2.2.0",
+    "tsup": "6.4.0",
+    "typescript": "^4.9.5"
+  },
+  "clean-package": "./clean-package.config.json",
+  "packageManager": "yarn@1.22.22"
+}
