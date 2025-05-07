@@ -1,5 +1,13 @@
 # MagicWorker
 
+> Simplifying the use of Web Workers — call worker functions like regular async functions
+
+✅ Key Features:
+- 🔁 Seamless two-way communication
+- 🧠 Clean, developer-friendly API
+- ⚡ Ideal for offloading heavy computations
+- 🛠️ Supports passing arguments and receiving results like local function calls
+
 ##  Installation
 
 ```bash
