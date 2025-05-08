@@ -2,6 +2,10 @@ enum ACTION_TYPE {
   GLOBAL = 'global'
 }
 
+enum WORKER_NAME {
+  MAIN = 'main'
+}
+
 interface WorkerMessage {
   action: ACTION_TYPE;
   payload: {
@@ -10,6 +14,7 @@ interface WorkerMessage {
     args?: any[];
     result?: any;
     error?: string;
+    workerName?: string;
   };
 }
 
@@ -53,33 +58,52 @@ class MagicWorkerClass {
   }
 
   init(options: MagicWorkerOptions): MagicWorkerClass['worker'] {
+    if (!this.worker) {
+      this.createWorker(WORKER_NAME.MAIN, options);
+    }
+
+    return this.worker
+  }
+
+  createWorker(workerName: string, options: MagicWorkerOptions): MagicWorkerClass['worker'] {
     const { methods, imports } = options;
 
     if (!methods) {
       throw new Error('methods required');
     }
 
-    if (!this.worker && methods) {
-      let importScripts = '';
-
-      if (imports) {
-        importScripts = `${this.importScripts(imports)}\n`
+    if (workerName === WORKER_NAME.MAIN) {
+      if (this.worker) {
+        return this.worker;
       }
-
-      const workerCode = `${importScripts}${this.serializeToString(methods)} \n\n self.onmessage = ${this.onMessageWorker.toString().trim()}`;
-
-      const blob = new Blob([workerCode], { type: 'application/javascript' });
-      this.worker = new Worker(URL.createObjectURL(blob));
-      (this.worker as any).destroy = this.destroy;
-      (this.worker as any).on = this.on;
-      (this.worker as any).off = this.off;
-      (this.worker as any).emit = this.emit;
-
-      this.addEventListener();
-      this.expose(methods);
     }
 
-    return this.worker
+    if ((this as any)[workerName]) {
+      return (this as any)[workerName]
+    }
+
+    let importScripts = '';
+
+    if (imports) {
+      importScripts = `${this.importScripts(imports)}\n`;
+    }
+
+    const workerCode = `${importScripts}${this.serializeToString(methods)} \n\n self.onmessage = ${this.onMessageWorker.toString().trim()}`;
+    const blob = new Blob([workerCode], { type: 'application/javascript' });
+    const worker = new Worker(URL.createObjectURL(blob));
+
+    (worker as any).destroy = () => this.destroy(worker, workerName);
+    worker?.addEventListener('message', this.onMessage);
+
+    if (workerName === WORKER_NAME.MAIN) {
+      this.worker = worker;
+      this.expose(workerName, methods);
+      return this.worker
+    }
+
+    (this as any)[workerName] = worker;
+    this.expose(workerName, methods);
+    return (this as any)[workerName]
   }
 
   onMessageWorker = (event: MessageEvent): void => {
@@ -95,6 +119,7 @@ class MagicWorkerClass {
 
     const method = payload.method;
     const args = payload.args || [];
+    const workerName = payload.workerName;
 
     if (method) {
       const func = (self as any)[method];
@@ -108,7 +133,8 @@ class MagicWorkerClass {
             payload: {
               id,
               method,
-              result
+              result,
+              workerName
             }
           });
         } catch (err) {
@@ -146,6 +172,7 @@ class MagicWorkerClass {
     }
 
     const result = payload.result;
+    const workerName = payload.workerName;
     const error = payload.error;
 
     const callback = this.callbacks[id];
@@ -157,7 +184,11 @@ class MagicWorkerClass {
     const method = payload.method;
 
     if (method) {
-      this.emit(method, result);
+      if (workerName) {
+        this.emit(`${workerName}/${method}`, result);
+      } else {
+        this.emit(method, result);
+      }
     }
 
     const { resolve, reject } = callback;
@@ -171,21 +202,52 @@ class MagicWorkerClass {
     }
   }
 
-  addEventListener(): void {
-    this.worker?.addEventListener('message', this.onMessage);
-  }
+  expose(workerName: string, obj: Record<string, any> = {}): void {
+    if (workerName === WORKER_NAME.MAIN) {
+      if (!this.worker) {
+        return;
+      }
 
-  expose(obj: Record<string, any> = {}): void {
-    if (!this.worker) {
+      for (const method in obj) {
+        if (!(method in this.worker)) {
+          const value = obj[method];
+
+          if (typeof value === 'function') {
+            (this.worker as any)[method] = (...args: any[]): Promise<any> => {
+              return new Promise((resolve, reject) => {
+                const id = `rpc${++this.counter}`;
+                this.callbacks[id] = {
+                  resolve,
+                  reject
+                };
+
+                this.worker!.postMessage({
+                  action: ACTION_TYPE.GLOBAL,
+                  payload: {
+                    id,
+                    method,
+                    args
+                  }
+                });
+              });
+            };
+          }
+        }
+      }
+
+      return;
+    }
+
+    if (!(this as any)[workerName]) {
       return;
     }
 
     for (const method in obj) {
-      if (!(method in this.worker)) {
+      if (!(method in (this as any)[workerName])) {
         const value = obj[method];
 
         if (typeof value === 'function') {
-          (this.worker as any)[method] = (...args: any[]): Promise<any> => {
+          ((this as any)[workerName] as any)[method] = (...args: any[]): Promise<any> => {
             return new Promise((resolve, reject) => {
               const id = `rpc${++this.counter}`;
               this.callbacks[id] = {
@@ -193,12 +255,13 @@ class MagicWorkerClass {
                 reject
               };
 
-              this.worker!.postMessage({
+              (this as any)[workerName]!.postMessage({
                 action: ACTION_TYPE.GLOBAL,
                 payload: {
                   id,
                   method,
-                  args
+                  args,
+                  workerName
                 }
               });
             });
@@ -210,30 +273,30 @@ class MagicWorkerClass {
 
   serializeToString(obj: Record<string, any> = {}): string {
     return Object.entries(obj)
-      .map(([key, value]) => {
-        if (typeof value === 'function') {
-          const raw = value.toString().trim();
+    .map(([key, value]) => {
+      if (typeof value === 'function') {
+        const raw = value.toString().trim();
 
-          if (raw.startsWith('function')) {
-            return `${key} = ${raw.replace(/^function\s*/, `function `)};`;
-          }
-
-          if (raw.includes('=>')) {
-            return `${key} = ${raw};`;
-          }
-
-          const argsMatch = raw.match(/\(([^)]*)\)/);
-          const bodyMatch = raw.match(/{([\s\S]*)}$/);
-
-          const args = argsMatch?.[1]?.trim() ?? '';
-          const body = bodyMatch?.[1]?.trim() ?? '';
-
-          return `function ${key}(${args}) {\n  ${body}\n}`;
+        if (raw.startsWith('function')) {
+          return `${key} = ${raw.replace(/^function\s*/, `function `)};`;
         }
 
-        return `${key} = ${JSON.stringify(value)};`;
-      })
-      .join('\n\n');
+        if (raw.includes('=>')) {
+          return `${key} = ${raw};`;
+        }
+
+        const argsMatch = raw.match(/\(([^)]*)\)/);
+        const bodyMatch = raw.match(/{([\s\S]*)}$/);
+
+        const args = argsMatch?.[1]?.trim() ?? '';
+        const body = bodyMatch?.[1]?.trim() ?? '';
+
+        return `function ${key}(${args}) {\n  ${body}\n}`;
+      }
+
+      return `${key} = ${JSON.stringify(value)};`;
+    })
+    .join('\n\n');
   }
 
   importScripts(imports: string[] = []) {
@@ -248,10 +311,16 @@ class MagicWorkerClass {
     return script
   }
 
-  destroy(): void {
-    this.worker?.removeEventListener('message', this.onMessage);
-    this.worker?.terminate();
-    this.worker = null;
+  destroy(worker: Worker, workerName: string): void {
+    worker?.removeEventListener('message', this.onMessage);
+    worker?.terminate();
+
+    if (workerName === WORKER_NAME.MAIN) {
+      this.worker = null;
+      return;
+    }
+
+    (this as any)[workerName] = null;
   }
 
   on(eventName: string, callback: EventCallback): void {

@@ -39,6 +39,24 @@ const worker = MagicWorker.init({
   imports: ['https://unpkg.com/lodash@4.17.21/lodash.js']
 });
 
+const channelWorker = MagicWorker.createWorker('channel', {
+  methods: {
+    counter: 0,
+    inc() {
+      return ++this.counter;
+    },
+    add(a: number, b: number) {
+      return a + b;
+    },
+    multiply: function (a: number, b: number) {
+      console.log('lodash', this._);
+
+      return a * b;
+    }
+  },
+  imports: ['https://unpkg.com/lodash@4.17.21/lodash.js']
+});
+
 (async () => {
   console.log('1 + 1 = ', await worker.add(1, 1));
   console.log('2 * 2 = ', await worker.multiply(2, 2));
