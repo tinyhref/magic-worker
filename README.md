@@ -30,10 +30,13 @@ const worker = MagicWorker.init({
     add(a: number, b: number) {
       return a + b;
     },
-    multiply: (a: number, b: number) => {
+    multiply: function (a: number, b: number) {
+      console.log('lodash', this._);
+      
       return a * b;
     }
-  }
+  },
+  imports: ['https://unpkg.com/lodash@4.17.21/lodash.js']
 });
 
 (async () => {

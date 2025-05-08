@@ -20,6 +20,7 @@ interface CallbackPair {
 
 interface MagicWorkerOptions {
   methods: Record<string, any>;
+  imports?: string[];
 }
 
 interface EventCallback {
@@ -52,14 +53,20 @@ class MagicWorkerClass {
   }
 
   init(options: MagicWorkerOptions): MagicWorkerClass['worker'] {
-    const { methods } = options;
+    const { methods, imports } = options;
 
     if (!methods) {
       throw new Error('methods required');
     }
 
     if (!this.worker && methods) {
-      const workerCode = `${this.serializeToString(methods)} \n\n self.onmessage = ${this.onMessageWorker.toString().trim()}`;
+      let importScripts = '';
+
+      if (imports) {
+        importScripts = `${this.importScripts(imports)}\n`
+      }
+
+      const workerCode = `${importScripts}${this.serializeToString(methods)} \n\n self.onmessage = ${this.onMessageWorker.toString().trim()}`;
 
       const blob = new Blob([workerCode], { type: 'application/javascript' });
       this.worker = new Worker(URL.createObjectURL(blob));
@@ -227,6 +234,18 @@ class MagicWorkerClass {
         return `${key} = ${JSON.stringify(value)};`;
       })
       .join('\n\n');
+  }
+
+  importScripts(imports: string[] = []) {
+    let script = '';
+
+    imports.forEach((name) => {
+      if (name.startsWith('http') || name.startsWith('/') || name.startsWith('./') || name.startsWith('../')) {
+        script += `importScripts("${name}");\n`
+      }
+    });
+
+    return script
   }
 
   destroy(): void {

@@ -1,6 +1,6 @@
 {
   "name": "@microui-kit/magic-worker",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "",
   "keywords": [],
   "author": "",
@@ -16,7 +16,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/microui-org/magic-worker.git"
+    "url": "git+https://github.com/tinyhref/magic-worker.git"
   },
   "scripts": {
     "build": "tsup src --dts",
