@@ -39,7 +39,8 @@ const worker = MagicWorker.init({
   imports: ['https://unpkg.com/lodash@4.17.21/lodash.js']
 });
 
-const channelWorker = MagicWorker.createWorker('channel', {
+const channelSharedWorker = MagicWorker.createWorker('channel', {
+  isSharedWorker: true,
   methods: {
     counter: 0,
     inc() {
