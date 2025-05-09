@@ -26,6 +26,7 @@ interface CallbackPair {
 interface MagicWorkerOptions {
   methods: Record<string, any>;
   imports?: string[];
+  isSharedWorker?: boolean;
 }
 
 interface EventCallback {
@@ -36,9 +37,11 @@ interface EventMap {
   [eventName: string]: EventCallback[];
 }
 
+type WorkerType = Worker | SharedWorker;
+
 class MagicWorkerClass {
   private static sdk: MagicWorkerClass | undefined;
-  public worker: Worker | null = null;
+  public worker: WorkerType | null = null;
   private callbacks: Record<string, CallbackPair> = {};
   private counter: number = 0;
   private events: EventMap = {};
@@ -66,7 +69,7 @@ class MagicWorkerClass {
   }
 
   createWorker(workerName: string, options: MagicWorkerOptions): MagicWorkerClass['worker'] {
-    const { methods, imports } = options;
+    const { methods, imports, isSharedWorker } = options;
 
     if (!methods) {
       throw new Error('methods required');
@@ -88,12 +91,16 @@ class MagicWorkerClass {
       importScripts = `${this.importScripts(imports)}\n`;
     }
 
-    const workerCode = `${importScripts}${this.serializeToString(methods)} \n\n self.onmessage = ${this.onMessageWorker.toString().trim()}`;
+    const workerCode = `${importScripts}${this.serializeToString(methods)} \n\n self.${isSharedWorker ? 'onconnect' : 'onmessage'} = ${this[isSharedWorker ? 'onMessageSharedWorker' : 'onMessageWorker'].toString().trim()}`;
     const blob = new Blob([workerCode], { type: 'application/javascript' });
-    const worker = new Worker(URL.createObjectURL(blob));
+    const worker = isSharedWorker ? new SharedWorker(URL.createObjectURL(blob)) : new Worker(URL.createObjectURL(blob));
+
+    if (worker instanceof SharedWorker) {
+      worker.port.start();
+    }
 
     (worker as any).destroy = () => this.destroy(worker, workerName);
-    worker?.addEventListener('message', this.onMessage);
+    this.addEventListener(worker);
 
     if (workerName === WORKER_NAME.MAIN) {
       this.worker = worker;
@@ -104,6 +111,74 @@ class MagicWorkerClass {
     (this as any)[workerName] = worker;
     this.expose(workerName, methods);
     return (this as any)[workerName]
+  }
+
+  addEventListener(worker: WorkerType) {
+    if (worker instanceof SharedWorker) {
+      worker.port?.addEventListener('message', this.onMessage);
+    } else {
+      worker?.addEventListener('message', this.onMessage);
+    }
+  }
+
+  onMessageSharedWorker = (e: MessageEvent): void => {
+    const port = e.ports[0];
+
+    port.addEventListener('message', (event: MessageEvent) => {
+      const data = event.data as WorkerMessage;
+
+      const { action, payload } = data;
+
+      const id = payload.id;
+
+      if (action !== ACTION_TYPE.GLOBAL || !id) {
+        return;
+      }
+
+      const method = payload.method;
+      const args = payload.args || [];
+      const workerName = payload.workerName;
+
+      if (method) {
+        const func = (self as any)[method];
+
+        if (typeof func === 'function') {
+          try {
+            const result = func(...args);
+
+            port.postMessage({
+              action: ACTION_TYPE.GLOBAL,
+              payload: {
+                id,
+                method,
+                result,
+                workerName
+              }
+            });
+          } catch (err) {
+            port.postMessage({
+              action: ACTION_TYPE.GLOBAL,
+              payload: {
+                id,
+                method,
+                error: '' + err
+              }
+            });
+          }
+        }
+      } else {
+        port.postMessage({
+          action: ACTION_TYPE.GLOBAL,
+          payload: {
+            id,
+            method,
+            error: 'NO_SUCH_METHOD'
+          }
+        });
+      }
+    });
+
+    port.start();
   }
 
   onMessageWorker = (event: MessageEvent): void => {
@@ -221,14 +296,16 @@ class MagicWorkerClass {
                   reject
                 };
 
-                this.worker!.postMessage({
-                  action: ACTION_TYPE.GLOBAL,
-                  payload: {
-                    id,
-                    method,
-                    args
-                  }
-                });
+                if (this.worker) {
+                  this.postMessage(this.worker, {
+                    action: ACTION_TYPE.GLOBAL,
+                    payload: {
+                      id,
+                      method,
+                      args
+                    }
+                  });
+                }
               });
             };
           }
@@ -271,32 +348,40 @@ class MagicWorkerClass {
     }
   }
 
+  postMessage(worker: WorkerType, data: any) {
+    if (worker instanceof SharedWorker) {
+      worker.port?.postMessage(data)
+    } else {
+      worker?.postMessage(data)
+    }
+  }
+
   serializeToString(obj: Record<string, any> = {}): string {
     return Object.entries(obj)
-    .map(([key, value]) => {
-      if (typeof value === 'function') {
-        const raw = value.toString().trim();
+      .map(([key, value]) => {
+        if (typeof value === 'function') {
+          const raw = value.toString().trim();
 
-        if (raw.startsWith('function')) {
-          return `${key} = ${raw.replace(/^function\s*/, `function `)};`;
+          if (raw.startsWith('function')) {
+            return `${key} = ${raw.replace(/^function\s*/, `function `)};`;
+          }
+
+          if (raw.includes('=>')) {
+            return `${key} = ${raw};`;
+          }
+
+          const argsMatch = raw.match(/\(([^)]*)\)/);
+          const bodyMatch = raw.match(/{([\s\S]*)}$/);
+
+          const args = argsMatch?.[1]?.trim() ?? '';
+          const body = bodyMatch?.[1]?.trim() ?? '';
+
+          return `function ${key}(${args}) {\n  ${body}\n}`;
         }
 
-        if (raw.includes('=>')) {
-          return `${key} = ${raw};`;
-        }
-
-        const argsMatch = raw.match(/\(([^)]*)\)/);
-        const bodyMatch = raw.match(/{([\s\S]*)}$/);
-
-        const args = argsMatch?.[1]?.trim() ?? '';
-        const body = bodyMatch?.[1]?.trim() ?? '';
-
-        return `function ${key}(${args}) {\n  ${body}\n}`;
-      }
-
-      return `${key} = ${JSON.stringify(value)};`;
-    })
-    .join('\n\n');
+        return `${key} = ${JSON.stringify(value)};`;
+      })
+      .join('\n\n');
   }
 
   importScripts(imports: string[] = []) {
@@ -311,9 +396,14 @@ class MagicWorkerClass {
     return script
   }
 
-  destroy(worker: Worker, workerName: string): void {
-    worker?.removeEventListener('message', this.onMessage);
-    worker?.terminate();
+  destroy(worker: WorkerType, workerName: string): void {
+    if (worker instanceof SharedWorker) {
+      worker.port?.removeEventListener('message', this.onMessage);
+      worker.port?.close();
+    } else {
+      worker?.removeEventListener('message', this.onMessage);
+      worker?.terminate();
+    }
 
     if (workerName === WORKER_NAME.MAIN) {
       this.worker = null;
