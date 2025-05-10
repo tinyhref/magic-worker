@@ -6,6 +6,13 @@ enum WORKER_NAME {
   MAIN = 'main'
 }
 
+enum WORKER_TYPE {
+  MODULE = 'module'
+}
+
+type AnyWorker = Worker | SharedWorker;
+type ImportsType = string[] | Record<string, string>;
+
 interface WorkerMessage {
   action: ACTION_TYPE;
   payload: {
@@ -15,6 +22,7 @@ interface WorkerMessage {
     result?: any;
     error?: string;
     workerName?: string;
+    isModule?: boolean;
   };
 }
 
@@ -25,8 +33,9 @@ interface CallbackPair {
 
 interface MagicWorkerOptions {
   methods: Record<string, any>;
-  imports?: string[];
+  imports?: ImportsType;
   isSharedWorker?: boolean;
+  workerType?: WorkerType;
 }
 
 interface EventCallback {
@@ -37,11 +46,11 @@ interface EventMap {
   [eventName: string]: EventCallback[];
 }
 
-type WorkerType = Worker | SharedWorker;
+declare const workerMethods: any;
 
 class MagicWorkerClass {
   private static sdk: MagicWorkerClass | undefined;
-  public worker: WorkerType | null = null;
+  public worker: AnyWorker | null = null;
   private callbacks: Record<string, CallbackPair> = {};
   private counter: number = 0;
   private events: EventMap = {};
@@ -69,7 +78,7 @@ class MagicWorkerClass {
   }
 
   createWorker(workerName: string, options: MagicWorkerOptions): MagicWorkerClass['worker'] {
-    const { methods, imports, isSharedWorker } = options;
+    const { methods, imports, isSharedWorker, workerType } = options;
 
     if (!methods) {
       throw new Error('methods required');
@@ -85,15 +94,20 @@ class MagicWorkerClass {
       return (this as any)[workerName]
     }
 
+    const isModule = workerType === WORKER_TYPE.MODULE;
+
     let importScripts = '';
 
     if (imports) {
-      importScripts = `${this.importScripts(imports)}\n`;
+      importScripts = `${this.importScripts(imports, { isModule })}\n`;
     }
-
-    const workerCode = `${importScripts}${this.serializeToString(methods)} \n\n self.${isSharedWorker ? 'onconnect' : 'onmessage'} = ${this[isSharedWorker ? 'onMessageSharedWorker' : 'onMessageWorker'].toString().trim()}`;
+    const workerCode = `${importScripts}${this.serializeToString(methods, { isModule })} \n\n self.${isSharedWorker ? 'onconnect' : 'onmessage'} = ${this[isSharedWorker ? 'onMessageSharedWorker' : 'onMessageWorker'].toString().trim()}`;
     const blob = new Blob([workerCode], { type: 'application/javascript' });
-    const worker = isSharedWorker ? new SharedWorker(URL.createObjectURL(blob)) : new Worker(URL.createObjectURL(blob));
+    const workerOptions: WorkerOptions = {};
+    if (workerType) {
+      workerOptions.type = workerType;
+    }
+    const worker = isSharedWorker ? new SharedWorker(URL.createObjectURL(blob), workerOptions) : new Worker(URL.createObjectURL(blob), workerOptions);
 
     if (worker instanceof SharedWorker) {
       worker.port.start();
@@ -104,16 +118,22 @@ class MagicWorkerClass {
 
     if (workerName === WORKER_NAME.MAIN) {
       this.worker = worker;
-      this.expose(workerName, methods);
+      this.expose(workerName, {
+        methods,
+        isModule
+      });
       return this.worker
     }
 
     (this as any)[workerName] = worker;
-    this.expose(workerName, methods);
+    this.expose(workerName, {
+      methods,
+      isModule
+    });
     return (this as any)[workerName]
   }
 
-  addEventListener(worker: WorkerType) {
+  addEventListener(worker: AnyWorker) {
     if (worker instanceof SharedWorker) {
       worker.port?.addEventListener('message', this.onMessage);
     } else {
@@ -138,42 +158,39 @@ class MagicWorkerClass {
       const method = payload.method;
       const args = payload.args || [];
       const workerName = payload.workerName;
+      const isModule = payload.isModule;
 
       if (method) {
-        const func = (self as any)[method];
+        const func = isModule ? workerMethods[method] : (self as any)[method];
 
         if (typeof func === 'function') {
           try {
             const result = func(...args);
 
-            port.postMessage({
-              action: ACTION_TYPE.GLOBAL,
-              payload: {
-                id,
-                method,
-                result,
-                workerName
-              }
-            });
+            if (result instanceof Promise) {
+              result.then((response) => {
+                port.postMessage({
+                  action: ACTION_TYPE.GLOBAL,
+                  payload: { id, method, result: response, workerName }
+                });
+              })
+            } else {
+              port.postMessage({
+                action: ACTION_TYPE.GLOBAL,
+                payload: { id, method, result, workerName }
+              });
+            }
           } catch (err) {
             port.postMessage({
               action: ACTION_TYPE.GLOBAL,
-              payload: {
-                id,
-                method,
-                error: '' + err
-              }
+              payload: { id, method, error: '' + err }
             });
           }
         }
       } else {
         port.postMessage({
           action: ACTION_TYPE.GLOBAL,
-          payload: {
-            id,
-            method,
-            error: 'NO_SUCH_METHOD'
-          }
+          payload: { id, method, error: 'NO_SUCH_METHOD' }
         });
       }
     });
@@ -195,42 +212,39 @@ class MagicWorkerClass {
     const method = payload.method;
     const args = payload.args || [];
     const workerName = payload.workerName;
+    const isModule = payload.isModule;
 
     if (method) {
-      const func = (self as any)[method];
+      const func = isModule ? workerMethods[method] : (self as any)[method];
 
       if (typeof func === 'function') {
         try {
           const result = func(...args);
 
-          self.postMessage({
-            action: ACTION_TYPE.GLOBAL,
-            payload: {
-              id,
-              method,
-              result,
-              workerName
-            }
-          });
+          if (result instanceof Promise) {
+            result.then((response) => {
+              self.postMessage({
+                action: ACTION_TYPE.GLOBAL,
+                payload: { id, method, result: response, workerName }
+              });
+            })
+          } else {
+            self.postMessage({
+              action: ACTION_TYPE.GLOBAL,
+              payload: { id, method, result, workerName }
+            });
+          }
         } catch (err) {
           self.postMessage({
             action: ACTION_TYPE.GLOBAL,
-            payload: {
-              id,
-              method,
-              error: '' + err
-            }
+            payload: { id, method, error: '' + err }
           });
         }
       }
     } else {
       self.postMessage({
         action: ACTION_TYPE.GLOBAL,
-        payload: {
-          id,
-          method,
-          error: 'NO_SUCH_METHOD'
-        }
+        payload: { id, method, error: 'NO_SUCH_METHOD' }
       });
     }
   }
@@ -277,15 +291,18 @@ class MagicWorkerClass {
     }
   }
 
-  expose(workerName: string, obj: Record<string, any> = {}): void {
+  expose(workerName: string, params: { methods: Record<string, any>, isModule?: boolean }): void {
+    const methods = params?.methods;
+    const isModule = params?.isModule;
+
     if (workerName === WORKER_NAME.MAIN) {
       if (!this.worker) {
         return;
       }
 
-      for (const method in obj) {
+      for (const method in methods) {
         if (!(method in this.worker)) {
-          const value = obj[method];
+          const value = methods[method];
 
           if (typeof value === 'function') {
             (this.worker as any)[method] = (...args: any[]): Promise<any> => {
@@ -302,7 +319,8 @@ class MagicWorkerClass {
                     payload: {
                       id,
                       method,
-                      args
+                      args,
+                      isModule
                     }
                   });
                 }
@@ -319,9 +337,9 @@ class MagicWorkerClass {
       return;
     }
 
-    for (const method in obj) {
+    for (const method in methods) {
       if (!(method in (this as any)[workerName])) {
-        const value = obj[method];
+        const value = methods[method];
 
         if (typeof value === 'function') {
           ((this as any)[workerName] as any)[method] = (...args: any[]): Promise<any> => {
@@ -332,15 +350,18 @@ class MagicWorkerClass {
                 reject
               };
 
-              (this as any)[workerName]!.postMessage({
-                action: ACTION_TYPE.GLOBAL,
-                payload: {
-                  id,
-                  method,
-                  args,
-                  workerName
-                }
-              });
+              if ((this as any)[workerName]) {
+                this.postMessage((this as any)[workerName], {
+                  action: ACTION_TYPE.GLOBAL,
+                  payload: {
+                    id,
+                    method,
+                    args,
+                    workerName,
+                    isModule
+                  }
+                })
+              }
             });
           };
         }
@@ -348,7 +369,7 @@ class MagicWorkerClass {
     }
   }
 
-  postMessage(worker: WorkerType, data: any) {
+  postMessage(worker: AnyWorker, data: any) {
     if (worker instanceof SharedWorker) {
       worker.port?.postMessage(data)
     } else {
@@ -356,47 +377,91 @@ class MagicWorkerClass {
     }
   }
 
-  serializeToString(obj: Record<string, any> = {}): string {
-    return Object.entries(obj)
-      .map(([key, value]) => {
-        if (typeof value === 'function') {
-          const raw = value.toString().trim();
+  serializeToString(methods: Record<string, any> = {}, params?: { isModule?: boolean }): string {
+    const isModule = params?.isModule;
 
-          if (raw.startsWith('function')) {
-            return `${key} = ${raw.replace(/^function\s*/, `function `)};`;
+    const methodsString = Object.entries(methods)
+    .map(([key, value]) => {
+      if (typeof value === 'function') {
+        const raw = value.toString().trim();
+        const isAsync = raw.startsWith('async');
+        const asyncString = isAsync ? 'async ' : '';
+
+        if (raw.startsWith('function')) {
+          const newValue = raw.replace(/^function\s*/, `function `);
+
+          if (isModule) {
+            return `${key}: ${newValue}`
           }
 
-          if (raw.includes('=>')) {
-            return `${key} = ${raw};`;
-          }
-
-          const argsMatch = raw.match(/\(([^)]*)\)/);
-          const bodyMatch = raw.match(/{([\s\S]*)}$/);
-
-          const args = argsMatch?.[1]?.trim() ?? '';
-          const body = bodyMatch?.[1]?.trim() ?? '';
-
-          return `function ${key}(${args}) {\n  ${body}\n}`;
+          return `${key} = ${newValue};`;
         }
 
-        return `${key} = ${JSON.stringify(value)};`;
-      })
-      .join('\n\n');
+        if (raw.includes('=>')) {
+          if (isModule) {
+            return `${key}: ${raw}`
+          }
+
+          return `${key} = ${raw};`;
+        }
+
+        const argsMatch = raw.match(/\(([^)]*)\)/);
+        const bodyMatch = raw.match(/{([\s\S]*)}$/);
+
+        const args = argsMatch?.[1]?.trim() ?? '';
+        const body = bodyMatch?.[1]?.trim() ?? '';
+
+        const newValue = `(${args}) {\n${body}\n}`;
+
+        if (isModule) {
+          return `${key}: ${asyncString}function ${newValue}`;
+        }
+
+        return `${asyncString}function ${key}${newValue}`;
+      }
+
+      const newValue = `${JSON.stringify(value)}`;
+
+      if (isModule) {
+        return `${key}: ${newValue}`
+      }
+
+      return `${key} = ${newValue};`;
+    })
+    .join(isModule ? ',\n' : '\n\n');
+
+    if (isModule) {
+      return `const workerMethods = {\n${methodsString}\n}`
+    }
+
+    return methodsString
   }
 
-  importScripts(imports: string[] = []) {
+  importScripts(imports: ImportsType, params?: { isModule?: boolean }) {
+    const isModule = params?.isModule;
+
     let script = '';
 
-    imports.forEach((name) => {
-      if (name.startsWith('http') || name.startsWith('/') || name.startsWith('./') || name.startsWith('../')) {
-        script += `importScripts("${name}");\n`
-      }
-    });
+    if (Array.isArray(imports)) {
+      imports.forEach((name: string) => {
+        if (name.startsWith('http') || name.startsWith('/') || name.startsWith('./') || name.startsWith('../')) {
+          script += `importScripts("${name}");\n`
+        }
+      });
+    } else {
+      Object.keys(imports).forEach((name: string) => {
+        const value = imports[name];
+
+        if (value.startsWith('http') || value.startsWith('/') || value.startsWith('./') || value.startsWith('../')) {
+          script += isModule ? `import ${name} from "${value}";\n` : `importScripts("${value}");\n`
+        }
+      })
+    }
 
     return script
   }
 
-  destroy(worker: WorkerType, workerName: string): void {
+  destroy(worker: AnyWorker, workerName: string): void {
     if (worker instanceof SharedWorker) {
       worker.port?.removeEventListener('message', this.onMessage);
       worker.port?.close();

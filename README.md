@@ -30,9 +30,9 @@ const worker = MagicWorker.init({
     add(a: number, b: number) {
       return a + b;
     },
-    multiply: function (a: number, b: number) {
+    multiply: function(a: number, b: number) {
       console.log('lodash', this._);
-      
+
       return a * b;
     }
   },
@@ -41,21 +41,17 @@ const worker = MagicWorker.init({
 
 const channelSharedWorker = MagicWorker.createWorker('channel', {
   isSharedWorker: true,
+  workerType: 'module',
   methods: {
-    counter: 0,
-    inc() {
-      return ++this.counter;
-    },
-    add(a: number, b: number) {
-      return a + b;
-    },
-    multiply: function (a: number, b: number) {
-      console.log('lodash', this._);
-
+    multiply: async (a: number, b: number) => {
+      console.log('lodash', lodash)
+      
       return a * b;
     }
   },
-  imports: ['https://unpkg.com/lodash@4.17.21/lodash.js']
+  imports: {
+    'lodash': 'https://esm.sh/lodash-es@4.17.21'
+  }
 });
 
 (async () => {
