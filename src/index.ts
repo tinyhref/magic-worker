@@ -332,15 +332,17 @@ class MagicWorkerClass {
                 reject
               };
 
-              (this as any)[workerName]!.postMessage({
-                action: ACTION_TYPE.GLOBAL,
-                payload: {
-                  id,
-                  method,
-                  args,
-                  workerName
-                }
-              });
+              if ((this as any)[workerName]) {
+                this.postMessage((this as any)[workerName], {
+                  action: ACTION_TYPE.GLOBAL,
+                  payload: {
+                    id,
+                    method,
+                    args,
+                    workerName
+                  }
+                })
+              }
             });
           };
         }
