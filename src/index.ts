@@ -10,7 +10,7 @@ enum WORKER_TYPE {
   MODULE = 'module'
 }
 
-type AnyWorker = Worker | SharedWorker;
+type AnyWorker = Worker;
 type ImportsType = string[] | Record<string, string>;
 
 interface WorkerMessage {
@@ -34,7 +34,6 @@ interface CallbackPair {
 interface MagicWorkerOptions {
   methods: Record<string, any>;
   imports?: ImportsType;
-  isSharedWorker?: boolean;
   workerType?: WorkerType;
 }
 
@@ -78,7 +77,7 @@ class MagicWorkerClass {
   }
 
   createWorker(workerName: string, options: MagicWorkerOptions): MagicWorkerClass['worker'] {
-    const { methods, imports, isSharedWorker, workerType } = options;
+    const { methods, imports, workerType } = options;
 
     if (!methods) {
       throw new Error('methods required');
@@ -101,17 +100,13 @@ class MagicWorkerClass {
     if (imports) {
       importScripts = `${this.importScripts(imports, { isModule })}\n`;
     }
-    const workerCode = `${importScripts}${this.serializeToString(methods, { isModule })} \n\n self.${isSharedWorker ? 'onconnect' : 'onmessage'} = ${this[isSharedWorker ? 'onMessageSharedWorker' : 'onMessageWorker'].toString().trim()}`;
+    const workerCode = `${importScripts}${this.serializeToString(methods, { isModule })} \n\n self.onmessage = ${this.onMessageWorker.toString().trim()}`;
     const blob = new Blob([workerCode], { type: 'application/javascript' });
     const workerOptions: WorkerOptions = {};
     if (workerType) {
       workerOptions.type = workerType;
     }
-    const worker = isSharedWorker ? new SharedWorker(URL.createObjectURL(blob), workerOptions) : new Worker(URL.createObjectURL(blob), workerOptions);
-
-    if (worker instanceof SharedWorker) {
-      worker.port.start();
-    }
+    const worker = new Worker(URL.createObjectURL(blob), workerOptions);
 
     (worker as any).destroy = () => this.destroy(worker, workerName);
     this.addEventListener(worker);
@@ -134,68 +129,7 @@ class MagicWorkerClass {
   }
 
   addEventListener(worker: AnyWorker) {
-    if (worker instanceof SharedWorker) {
-      worker.port?.addEventListener('message', this.onMessage);
-    } else {
-      worker?.addEventListener('message', this.onMessage);
-    }
-  }
-
-  onMessageSharedWorker = (e: MessageEvent): void => {
-    const port = e.ports[0];
-
-    port.addEventListener('message', (event: MessageEvent) => {
-      const data = event.data as WorkerMessage;
-
-      const { action, payload } = data;
-
-      const id = payload.id;
-
-      if (action !== ACTION_TYPE.GLOBAL || !id) {
-        return;
-      }
-
-      const method = payload.method;
-      const args = payload.args || [];
-      const workerName = payload.workerName;
-      const isModule = payload.isModule;
-
-      if (method) {
-        const func = isModule ? workerMethods[method] : (self as any)[method];
-
-        if (typeof func === 'function') {
-          try {
-            const result = func(...args);
-
-            if (result instanceof Promise) {
-              result.then((response) => {
-                port.postMessage({
-                  action: ACTION_TYPE.GLOBAL,
-                  payload: { id, method, result: response, workerName }
-                });
-              })
-            } else {
-              port.postMessage({
-                action: ACTION_TYPE.GLOBAL,
-                payload: { id, method, result, workerName }
-              });
-            }
-          } catch (err) {
-            port.postMessage({
-              action: ACTION_TYPE.GLOBAL,
-              payload: { id, method, error: '' + err }
-            });
-          }
-        }
-      } else {
-        port.postMessage({
-          action: ACTION_TYPE.GLOBAL,
-          payload: { id, method, error: 'NO_SUCH_METHOD' }
-        });
-      }
-    });
-
-    port.start();
+    worker?.addEventListener('message', this.onMessage);
   }
 
   onMessageWorker = (event: MessageEvent): void => {
@@ -370,11 +304,7 @@ class MagicWorkerClass {
   }
 
   postMessage(worker: AnyWorker, data: any) {
-    if (worker instanceof SharedWorker) {
-      worker.port?.postMessage(data)
-    } else {
-      worker?.postMessage(data)
-    }
+    worker?.postMessage(data)
   }
 
   serializeToString(methods: Record<string, any> = {}, params?: { isModule?: boolean }): string {
@@ -462,13 +392,8 @@ class MagicWorkerClass {
   }
 
   destroy(worker: AnyWorker, workerName: string): void {
-    if (worker instanceof SharedWorker) {
-      worker.port?.removeEventListener('message', this.onMessage);
-      worker.port?.close();
-    } else {
-      worker?.removeEventListener('message', this.onMessage);
-      worker?.terminate();
-    }
+    worker?.removeEventListener('message', this.onMessage);
+    worker?.terminate();
 
     if (workerName === WORKER_NAME.MAIN) {
       this.worker = null;
